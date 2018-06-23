@@ -647,3 +647,1045 @@ AppInfo 的属性值包括：
 
 
 ## 5. 推送通知
+
+消息推送有着十分广阔的应用场景：
+
+新品上架，推送消息给用户，点击即进入商品详情页面。
+用户很久没有进入站点了，推送消息告知这段时间站点的更新。
+使用推送消息通知，能够让我们的应用像 Native App 一样，提升用户体验。
+
+但是目前整体支持度并不高，在手机端更是只有安卓 Chrome57 支持。
+
+### 5.1 获取授权
+
+在订阅消息之前，浏览器需要得到用户授权，同意后才能使用消息推送服务。
+
+![avatar](/images/ask-permission.png)
+
+显示以上对话框有两种方式：
+
+1. 在订阅之前先获取用户授权，使用Notification.requestPermission
+
+2. 如果不选择使用方法1，在正式订阅时浏览器也会自动弹出，对于开发者而言不需要显式调用
+
+- 在第一种使用Notification.requestPermission的方式中，由于通知API还不稳定，需要兼容新旧版本的返回值：
+
+```js
+function askPermission() {
+    return new Promise(function (resolve, reject) {
+        var permissionResult = Notification.requestPermission(function (result) {
+            // 旧版本
+            resolve(result);
+        });
+        if (permissionResult) {
+            // 新版本
+            permissionResult.then(resolve, reject);
+        }
+    })
+    .then(function (permissionResult) {
+        if (permissionResult !== 'granted') {
+            // 用户未授权
+        }
+    });
+}
+```
+
+当用户允许或者拒绝授权后，后续都不会重复询问。 想要更改这个设置，在 Chrome 地址栏左侧网站信息中如下：
+
+![avatar](/images/change-permission.png)
+
+
+### 5.2 订阅推送服务
+
+服务端作为消息来源，委托推送服务发送消息给订阅消息的浏览器，必须知道浏览器的具体地址。这个具体的地址是推送服务产生的，不同的服务端和不同的浏览器都会产生不同的地址。那么在订阅时服务端（也就是我们的应用）就需要一个唯一标识的身份。
+
+
+#### 5.2.1 applicationServerKey
+
+又被称作VAPID，这就是我们应用的唯一标识。生成applicationServerKey的方法有两种：
+
+1. 在服务端使用 web-push 生成，在后续使用web-push发送消息一节中会详细介绍
+
+2. 访问https://web-push-codelab.appspot.com/快速生成
+
+
+此时得到的applicationServerKey是base64编码后的字符串，需要转换成UInt8Array格式，才能作为订阅方法接受的参数。
+
+另外要注意，生成applicationServerKey的同时，会同时生成与之配对的私钥，用于后续服务端请求推送服务的安全验证（详见后续消息推送安全性一节），因此这个私钥是绝对不能暴露在页面中的
+
+
+
+
+#### 5.2.2 推送订阅对象
+
+拥有了服务端的唯一标识，浏览器可以开始向推送服务发起订阅请求了，有两点要注意：
+
+请求推送服务的地址对于开发者而言是无法指定的，完全由浏览器决定。
+在请求发送之前，浏览器已经生成了一个推送订阅对象(PushSubscription)。得到响应之后，会将推送服务生成的地址加入这个推送订阅对象中。
+一个完整的推送订阅对象结构如下
+
+
+```json
+{
+    "endpoint": "https://fcm.googleapis.com/fcm/send/...",
+    "keys": {
+        "p256dh" : "BNcRd...",
+        "auth"   : "tBHI..."
+    }
+}
+```
+
+
+其中endpoint就是推送服务返回的唯一标识用户设备的地址，而keys是浏览器预先生成的，包含了用于安全验证信息，在后续向推送服务发送消息时会使用到（详见后续消息推送安全性一节）。
+
+
+#### 5.2.3 订阅消息的具体实现
+
+订阅消息的具体实现步骤如下：
+
+1. 注册 Service Worker
+
+2. 使用 pushManager 添加订阅，浏览器向推送服务发送请求，其中传递参数对象包含两个属性：
+
+    - userVisibleOnly，不允许静默的推送，所有推送都对用户可见，所以值为true
+    -capplicationServerKey，服务器生成的公钥
+    
+3. 得到推送服务成功响应后，浏览器将推送服务返回的 endpoint 加入推送订阅对象，向服务器发送这个对象供其存储
+
+以上步骤对应的具体代码实现如下：
+
+
+```js
+// 将base64的applicationServerKey转换成UInt8Array
+function urlBase64ToUint8Array(base64String) {
+    var padding = '='.repeat((4 - base64String.length % 4) % 4);
+    var base64 = (base64String + padding)
+        .replace(/\-/g, '+')
+        .replace(/_/g, '/');
+    var rawData = window.atob(base64);
+    var outputArray = new Uint8Array(rawData.length);
+    for (var i = 0, max = rawData.length; i < max; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+}
+function subscribe(serviceWorkerReg) {
+    serviceWorkerReg.pushManager.subscribe({ // 2. 订阅
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array('<applicationServerKey>')
+    })
+    .then(function (subscription) {
+        // 3. 发送推送订阅对象到服务器，具体实现中发送请求到后端api
+        sendEndpointInSubscription(subscription);
+    })
+    .catch(function () {
+        if (Notification.permission === 'denied') {
+            // 用户拒绝了订阅请求
+        }
+    });
+}
+if ('serviceWorker' in navigator && 'PushManager' in window) {
+    navigator.serviceWorker.register('./service-worker.js')  // 1. 注册Service Worker
+        .then(function(reg) {});
+    navigator.serviceWorker.ready.then(function(reg) {subscribe(reg)});
+}
+```
+
+
+#### 5.2.4 非标准浏览器
+
+
+如果订阅时第二步pushManager.subscribe()中缺少了applicationServerKey参数，我们会得到这样的错误信息：
+
+[!错误信息](/images/missing-aSK.png)
+
+missing-applicationServerKey
+
+错误信息中前半段显而易见，但后半段中提到的gcm_sender_id是什么呢？
+
+GCM(Google Cloud Messaging)是 Google 早期的推送服务，现已更名为 FCM(Firebase Cloud Messaging)，对于旧版本的 Chrome 浏览器，gcm_sender_id相当于applicationServerKey。
+
+如果开发者想兼容这些老版本的浏览器，那么可以参考[非标准浏览器的兼容措施](https://web-push-book.gauntface.com/chapter-06/01-non-standards-browsers/)
+
+
+#### 5.2.5 取消订阅
+
+某些情况下，例如服务端请求推送服务，返回了推送服务失效错误码，此时需要取消订阅，代码实现如下：
+
+```js
+navigator.serviceWorker.ready.then(function (reg) {
+    reg.pushManager.getSubscription()
+        .then(function (subscription) {
+            subscription.unsubscribe()
+                .then(function (successful) {
+                    //
+                })
+                .catch(function (e) {
+                    //
+                });
+        });
+});
+```
+
+### 5.3 发送消息
+
+所有推送服务都遵循统一的调用标准，好比快递公司有着全国统一的上门服务电话，这就是 [Web Push Protocol](https://tools.ietf.org/html/draft-ietf-webpush-protocol) 。
+
+推送服务接到了服务器的调用请求，向设备推送消息，如果处于离线状态，消息将进入待发送队列，过期后队列清空，消息被丢弃。
+
+下面介绍保证消息安全的原理，以及在实际使用中服务端的具体代码实现。
+
+
+#### 5.3.1 消息推送安全性
+
+
+消息推送的安全体现在两方面：
+
+- 推送服务确保调用来自可靠的服务端
+
+- 推送消息内容只有浏览器能够解密，就算是推送服务也不行
+
+##### 5.3.1.1 保证服务端可靠性
+
+服务器在调用推送服务时，需要额外发送请求头，例如 Authorization 和 Crypto-Key，首先介绍 Authorization。
+
+> [JWT(JSON Web Token)](https://jwt.io/)提供了一种消息接收者验证发送者的方法。
+
+
+Authorization 就包含了 JWT 格式的字符串： Authorization: 'WebPush <JWT Info>.<JWT Data>.<Signature>'
+
+Authorization 的内容由三部分组成，使用.连接，前两部分是使用base64编码后的JSON字符串：
+
+- JWT Info，指明了签名使用的加密算法
+
+```json
+{
+    "typ": "JWT",
+    "alg": "ES256"
+}
+```
+
+- JWT Data，包含发送者的信息，推送服务的源地址，失效时间，和发送者的联系方式
+
+```json
+{
+    "aud": "https://some-push-service.org",
+    "exp": "1469618703",
+    "sub": "mailto:example@web-push-book.org"
+}
+```
+
+- 签名，连接前两部分，服务端使用私钥加密。还记得之前添加订阅的时候，使用到的服务端生成的公钥吗，此处使用的正是与之配对的私钥
+
+
+另外，请求头中还需要将公钥带给推送服务： Crypto-Key: p256ecdsa=<URL Safe Base64 Public Application Server Key>
+
+
+这样，当推送服务收到服务端的调用请求时，使用公钥解密 Authorization 签名部分，如果匹配前两部分，说明请求来自可靠的服务端。
+
+
+##### 5.3.1.2 消息内容加密
+
+
+由于推送 API 的统一性，用户可能误发消息到不信任的推送服务，对消息进行加密可以确保只有浏览器端才能解密读取，防止将用户信息泄露给不合法的推送服务。
+
+还记得最初用户订阅成功后，浏览器生成的推送订阅对象吗？里面包含了endpoint，而加密过程会使用其中的keys对象。
+
+
+
+#### 5.3.2 推送服务的响应
+
+现在，服务端可以向 endpoint 发送包含以上请求头的请求了，推送服务响应201表示接受调用。 其余响应状态码如下：
+
+429 Too many requests
+400 Invalid request
+404 Not Found 订阅过期，需要在服务端删除保存的推送订阅对象
+410 Gone 订阅失效，需要在服务端删除保存的推送订阅对象，并调用推送订阅对象的unsubscribe()方法
+413 Payload size too large
+
+
+#### 5.3.3 使用web-push发送消息
+
+服务端请求推送服务，需要涉及加密，设置请求头等复杂操作，使用web-push可以帮助我们解决大部分问题。
+
+步骤如下：
+
+1. 使用 web-push 生成一对公私钥，还记得 pushManager 订阅时需要用到的applicationServerKey吗，我们需要公钥publicKey传递到订阅脚本所在的页面中。
+
+2. 调用setVapidDetails为 web-push 设置生成的公私钥
+
+3. 之前订阅时浏览器已经将推送订阅对象发送到了服务端，此时从数据库中取出。
+
+4. 调用sendNotification向推送服务发起调用请求，如果返回错误状态码，从数据库中删除保存的推送订阅对象。
+
+以上步骤实现代码如下：
+
+```js
+var webpush = require('web-push');
+      var vapidKeys = webpush.generateVAPIDKeys(); // 1.生成公私钥
+      webpush.setVapidDetails( // 2.设置公私钥
+          'mailto:sender@example.com',
+          vapidKeys.publicKey,
+          vapidKeys.privateKey
+      );
+      // 3.从数据库中拿出之前保存的pushSubscription，具体实现省略
+      // 4.向推送服务发起调用请求
+      webpush.sendNotification(pushSubscription, '推送消息内容')
+          .catch(function (err) {
+              if (err.statusCode === 410) {
+                  // 从数据库中删除推送订阅对象
+              }
+          });
+```
+
+### 5.4 显示通知
+
+使用消息中携带的数据，展示通知，此处省略了通知对象(Notification)的配置信息，示例代码如下：
+
+```js
+self.addEventListener('push', function (event) {
+    if (event.data) {
+        var promiseChain = Promise.resolve(event.data.json())
+                .then(data => self.registration.showNotification(data.title, {}));
+        event.waitUntil(promiseChain);
+    }
+});
+```
+
+
+#### 5.4.1 如何使用通知
+
+使用 notification 本身非常简单，只需要一行代码，但在此之前需要一些准备工作。
+
+- 检测浏览器兼容性，获取通知权限。 execute() 方法后续会有介绍。
+
+```js
+window.addEventListener('load', () => {
+    if (!('serviceWorker' in navigator)) {
+        // Service Worker isn't supported on this browser, disable or hide UI.
+        return;
+    }
+
+    if (!('PushManager' in window)) {
+        // Push isn't supported on this browser, disable or hide UI.
+        return;
+    }
+
+    let promiseChain = new Promise((resolve, reject) => {
+        const permissionPromise = Notification.requestPermission(result => {
+            resolve(result);
+        });
+
+        if (permissionPromise) {
+            permissionPromise.then(resolve);
+        }
+    })
+    .then(result => {
+        if (result === 'granted') {
+            execute();
+        }
+        else {
+            console.log('no permission');
+        }
+    });
+});
+```
+
+- 注册 service worker ，获取注册对象。（ service-worker.js 暂时不需要任何代码支持，空白文件也可）
+
+```js
+function registerServiceWorker() {
+    return navigator.serviceWorker.register('service-worker.js')
+    .then(registration => {
+        console.log('Service worker successfully registered.');
+        return registration;
+    })
+    .catch(err => {
+        console.error('Unable to register service worker.', err);
+    });
+}
+```
+
+- 使用 showNotification 方法弹出通知。
+
+```js
+function execute() {
+    registerServiceWorker().then(registration => {
+        registration.showNotification('Hello World!');
+    });
+}
+```
+
+#### 5.4.2 参数
+
+showNotification 方法共有两个参数，分别为：
+
+- title - 必填 字符串类型 表示通知的标题
+- options - 选填 对象类型 集合众多配置项，可用项如下：
+
+
+```js
+{
+    // 视觉相关
+    "body": "<String>",
+    "icon": "<URL String>",
+    "image": "<URL String>",
+    "badge": "<URL String>",
+    "vibrate": "<Array of Integers>",
+    "sound": "<URL String>",
+    "dir": "<String of 'auto' | 'ltr' | 'rtl'>",
+
+    // 行为相关
+    "tag": "<String>",
+    "data": "<Anything>",
+    "requireInteraction": "<boolean>",
+    "renotify": "<Boolean>",
+    "silent": "<Boolean>",
+
+    // 视觉行为均会影响
+    "actions": "<Array of Strings>",
+
+    // 定时发送时间戳
+    "timestamp": "<Long>"
+}
+```
+
+##### 5.4.2.1 视觉部分
+
+###### 5.4.2.1.1 标题和内容
+
+标题可以通过 showNotification 的第一个参数设置。而通知内容可以通过配置项中的 body 进行设置。如下：
+
+```js
+registration.showNotification('Simple Title', {
+     body: 'Simple piece of body text.\nSecond line of body text :)'
+ });
+```
+
+通知在不同的浏览器以及不同的操作系统中展现的样式并不相同。事实上：
+
+1. 不同的操作系统有自身的通知样式。Firefox浏览器直接使用系统通知样式
+
+2. 特别的，Google Chrome有自己定制的样式，以保持在各个操作系统的一致性
+
+
+当标题和内容长度超过一定限制时，通知会自行处理。例如在Google Chrome中会自动截断：
+
+在Firefox中会更友善一些，当鼠标浮在内容上，会展现全部内容：
+
+
+###### 5.4.2.1.2 图标
+
+在Google Chrome下通知的左侧有一大段空白区域。这里其实是用来显示图标的，为此我们需要用到配置项的 icon ，如下：
+
+```js
+registration.showNotification('Icon Notification', {
+    icon: 'path/to/icon.png'
+});
+```
+
+
+在图标尺寸方面并没有一个明确的规定。普通情况下建议使用192px*192px以上的图片进行设置(64px*3)。
+
+另外某些浏览器要求静态资源必须通过HTTPS访问，因此在使用第三方图片资源时要格外注意。
+
+
+###### 5.4.2.1.3 小图标(Badge)
+
+小图标(Badge)是在手机上展现通知缩略信息时使用的图标。我们可以使用如下代码
+
+```js
+registration.showNotification('Badge Notification', {
+    badge: 'path/to/badge.png'
+});
+
+```
+
+目前仅出现在Android系统的Google Chrome上
+
+小图标的注意点和图标相同，尺寸建议为72px*72px以上(24px*3)，同样尽量使用HTTPS资源。
+
+
+###### 5.4.2.1.4 图片(image)
+
+和图标(icon)不同，图片(image)在通知的展现尺寸要大不少，可以给用户展现一些预览图片。我们可以使用如下代码
+
+```js
+registration.showNotification('Image Notification', {
+    image: 'path/to/image.jpg'
+});
+```
+
+因为图片相对来说还是一个比较新的配置项，因此以后可能会被修改。在Firefox中，图片暂时无法显示
+
+###### 5.4.2.1.5 按钮(Actions)
+
+我们可以通过使用 actions 配置项来为通知增加一些按钮，代码如下：
+
+```js
+registration.showNotification('Actions Notification', {
+    actions: [
+        {
+            action: 'coffee-action',
+            title: 'Coffee',
+            icon: 'path/to/action-1.png'
+        },
+        {
+            action: 'doughnut-action',
+            title: 'Doughnut',
+            icon: 'path/to/action-2.png'
+        },
+        {
+            action: 'gramophone-action',
+            title: 'gramophone',
+            icon: 'path/to/action-3.png'
+        },
+        {
+            action: 'atom-action',
+            title: 'Atom',
+            icon: 'path/to/action-4.png'
+        }
+    ]
+});
+```
+通过以上代码，我们为通知增加了4个按钮。但事实上在不同情况下一条通知可显示的按钮数量是有限的（记录在 Notification.maxActions 变量中），超过的部分就将被省略。在本文编写时，Google Chrome允许一条通知中显示2个按钮
+
+actions 配置项是一个数组，每个元素为一个对象，而每个对象都必须拥有3个属性。除了按钮标题和图标地址之外，每个对象还拥有一个唯一的ID，记录于 action 属性中。它会在按钮被点击时使用到，这些会在行为部分中进行介绍。
+
+此外，在Android6.0 Marshmallow版本中，图标的颜色可能会被设置为匹配系统的颜色.
+
+
+在Android Nougat版本中按钮暂时不会显示。
+
+关于按钮图标方面，有一些建议：
+
+1. 所有图标使用一个相同的色系，以保证给用户带来的感官是一致的。
+
+2. 图标尺寸建议使用128px*128px
+
+3. 某些情况下按钮不会显示，需要做好应对。
+
+在本文编写的时候，只有Google Chrome和Opera for Android支持按钮(Actions)。
+
+
+###### 5.4.2.1.6 文字方向
+
+如果我们需要控制文字的方向，可以使用 dir 配置项。它的合法值为 'auto', 'ltr'或者'rtl'。其中'auto'会自动根据文字内容来选择方向，例如阿拉伯文会自动从右到左显示，默认值为'auto'。
+
+
+###### 5.4.2.1.7 震动
+
+我们可以使用 vibrate 配置项来设置通知的震动模式。 vibrate 以数组的形式进行配置，其中的数字以2个为一组，分别表示震动的毫秒数，和不震动的毫秒数，如此往复。
+
+```js
+registration.showNotification('Vibrate Notification', {
+    vibrate: [500, 110, 500, 110, 450, 110, 200, 110, 170, 40, 450, 110, 200, 110, 170, 40, 500]
+});
+```
+
+注意部分设备可能不支持 vibrate 配置项。
+
+
+###### 5.4.2.1.8 声音
+
+按照规范，声音可以使用 sound 配置项进行配置，用以在通知弹出时播放对应的音频文件。
+
+```js
+registration.showNotification('Sound Notification', {
+    sound: 'path/to/sound.mp3'
+});
+```
+
+然而很遗憾，目前并没有浏览器支持 sound 配置项。
+
+
+###### 5.4.2.1.9 时间戳
+
+使用 timestamp 配置项来达到定时发送通知的目的。 timestamp 配置项的值是数字类型，表示设定时间距离1970年1月1日0点的毫秒数。例子如下：
+
+```js
+registration.showNotification('Timestamp Notification', {
+    body: 'Timestamp is set to "01 Jan 2000 00:00:00".',
+    timestamp: Date.parse('01 Jan 2000 00:00:00')
+});
+```
+
+###### 5.4.2.1.10 使用通知的一些建议
+
+一些常见的错误，我们应当尽量避免它们：
+
+1. 不要将站点的名字或者URL放到通知的标题或者内容中，因为浏览器会自动添加这些信息，避免造成重复。
+
+2. 尽量使用简明扼要的通知标题和内容。假设你需要通知用户，有人给他发了一条信息，你应该使用例如“某人给你发送了一条信息”作为标题，并将消息内容放到通知内容中，而不是把标题叫做“新信息”或者把内容叫做“点击查看”。
+
+
+###### 5.4.2.1.11 支持性检测
+
+从上述配置项的分析中我们也可以看到，通知在Google Chrome和Firefox中支持的效果并不一致。
+
+举例来说，在使用按钮(Actions)时，我们应该检测浏览器是否支持，因此我们应该使用如下代码：
+
+```js
+if ('actions' in Notification.prototype) {
+    // Action buttons are supported
+}
+else {
+    // Action buttons are NOT supported
+}
+```
+这样就可以在不支持按钮时使用其他方式来进行通知。
+
+##### 5.4.2.2 行为部分
+
+默认情况下，如果只使用上述外观相关的配置项，通知的默认行为如下：
+
+1. 对通知内容进行点击，通知没有变化
+
+2. 新的通知会在老的通知之上显示，浏览器不会对它们进行归类或者折叠等操作
+
+3. 根据设备的不同，可能会在通知弹出时播放声音和震动
+
+4. 在某些设备上，通知经过一段时间会自动消失；在另外一些设备上则不会消失，直到用户点击关闭为止
+
+5. 在这一部分，我们将讨论如何通过配置项来修改上述的默认行为。
+
+
+###### 5.4.2.2.1 点击通知
+
+默认情况下用户点击通知不会有任何变化，例如关闭通知。而事实上通知被点击则关闭比较符合我们常见的交互习惯，为了达成这个效果，我们需要在 service-worker.js 中进行事件注册，代码如下：
+
+
+```js
+self.addEventListener('notificationclick', event => {
+    let clickedNotification = event.notification;
+    clickedNotification.close();
+
+    // 执行某些异步操作，等待它完成
+    let promiseChain = doSomething();
+    event.waitUntil(promiseChain);
+});
+```
+
+通过 event.notification 我们可以获取到被点击的通知对象，从而获取它的属性或者调用它的方法。例子中调用了 close() 方法就可以关闭通知。
+
+需要注意，如果我们进行了某些异步操作，那么最后的 event.waitUntil() 是必不可少的，否则会导致 service worker 运行不正常。
+
+
+
+###### 5.4.2.2.2 点击按钮
+
+
+在用户点击某个按钮时，我们可以监听 notificationclick 事件，通过 event.action 属性获得按钮的ID（对应 action 属性）。例如我们点击咖啡图标，则 event.action 的值为 'coffee-action'。我们可以参考如下代码：
+
+
+```js
+self.addEventListener('notificationclick', event => {
+    if (!event.action) {
+        // 没有点击在按钮上
+        console.log('Notification Click.');
+        return;
+    }
+
+    switch (event.action) {
+        case 'coffee-action':
+            console.log('User \'s coffee.');
+            break;
+        case 'doughnut-action':
+            console.log('User \'s doughnuts.');
+            break;
+        case 'gramophone-action':
+            console.log('User \'s music.');
+            break;
+        case 'atom-action':
+            console.log('User \'s science.');
+            break;
+        default:
+            console.log(`Unknown action clicked: '${event.action}'`);
+            break;
+    }
+});
+```
+
+###### 5.4.2.2.3 标签(tag)
+
+默认情况下，我们每调用一次 showNotification 方法，就发送一条通知，每条之间都是独立的，互相展开的。因此可以想见，如果连续发送多条通知，用户的手机上会充满来自同一个网站的通知，用户很容易产生负面情绪。为了解决这个问题，我们可以尝试使用 tag 来解决这个问题。
+
+
+tag 的取值类型是字符串类型，是一个唯一的ID。两个相同ID的通知会被归类到一起。我们来看一下例子：
+
+```js
+registration.showNotification('Notification 1 of 3', {
+    body: 'With \'tag\' of \'message-group-1\'',
+    tag: 'message-group-1'
+});
+```
+
+然后我们再发送一条通知，采用不同的 tag ，如下：
+
+```js
+registration.showNotification('Notification 2 of 3', {
+    body: 'With \'tag\' of \'message-group-2\'',
+    tag: 'message-group-2'
+});
+```
+
+于是我们又收到一条通知，加上上一条就会有两条了。
+
+
+在发送第三条通知时，我们采用和第一条相同的 tag ，因为和第一条的 tag 相同，所以并没有再弹出第三条通知，而是将第一条通知替换为了第三条通知。总体来看，我们调用了三次 showNotification 方法，但是用户只显示两条，防止用户体验极度恶化。
+
+
+> 如果两条通知包含相同的 tag ，除了替换之外，后面一条通知将不会有声音或者震动提示。如果我们的确需要再次有声音或者震动提示，那么我们需要使用 renotify 配置。
+
+
+###### 5.4.2.2.4 重新通知(renotify)
+
+renotify 配置项是和 tag 一同使用的。在使用 tag 的同时，设置 renotify 为 true 可以让浏览器在替换通知时提示声音或者震动。最容易想到的使用场景在聊天应用中，有新消息时的提示。示例代码如下：
+
+```js
+registration.showNotification('Notification 3 of 3', {
+    tag: 'message-group-1',
+    renotify: true
+});
+```
+
+> 注意：如果你使用了 renotify 属性但是没有使用 tag 属性，代码会有如下报错：
+
+
+```text
+TypeError: Failed to execute 'showNotification' on 'ServiceWorkerRegistration':
+Notifications which set the renotify flag must specify a non-empty tag
+```
+
+###### 5.4.2.2.5 静默通知(silent)
+
+silent 配置项可以让一条通知静默提示，不播放声音或者震动，适合使用在不需要用户立刻响应的通知的情景下，示例如下：
+
+```js
+registration.showNotification('Silent Notification', {
+    silent: true
+});
+```
+
+>  注意：如果你同时使用了 silent 和 renotify 属性，silent 会有较高的优先级，即依然为静默通知。
+ 
+
+###### 5.4.2.2.6 用户交互(requireInteraction)
+
+
+默认情况下，PC下的Google Chrome在展现通知一部分时间后隐藏通知；而Android系统上的Google Chrome会一直显示通知，直到用户交互，例如点击关闭按钮。
+
+为了显式的让通知一直显示直到用户交互，我们可以设置 requireInteraction 属性。
+
+```js
+registration.showNotification('Require Interaction Notification', {
+    body: 'With "requireInteraction: \'true\'".',
+    requireInteraction: true
+});
+```
+
+在使用这个配置项时要格外注意，这可能导致用户体验的下降，因为他必须要求用户操作才能移除通知。
+
+
+### 5.4.3 常用实现
+
+
+#### 5.4.3.1 通知关闭事件
+
+在行为部分中，我们监听过 notificationclick 事件来处理通知点击。
+
+事实上，还有一个 notificationclose 事件可以在用户关闭通知时被触发。这里的“关闭”指的是用户点击通知右上角的关闭按钮或者通过滑动通知来移除通知，点击通知并不在此列。通过监听这个事件我们可以对用户关闭通知进行统计，进而统计通知时长，评估通知效果等。
+
+我们可以将如下代码增加到 service-worker.js 中。其中 notificationCloseAnalytics 方法是用来做一些统计工作，因为可能包含异步因此返回为 Promise 对象，也因此必须使用 waitUntil 等待其执行完成。
+
+```js
+self.addEventListener('notificationclose', event => {
+    let dismissedNotification = event.notification;
+    let promiseChain = notificationCloseAnalytics();
+    event.waitUntil(promiseChain);
+});
+```
+
+#### 5.4.3.2 通知事件的数据传递
+
+在发送通知时通过 data 将需要的动态数据传递过去，在主程序中添加如下代码：
+
+```js
+registration.showNotification('Notification With Data', {
+    body: 'This notification has data attached to it that is printed to the console when it\'s clicked.',
+    data: {
+        time: (new Date()).toString(),
+        message: 'Hello World!'
+    }
+});
+```
+
+
+在 service-worker.js 中，我们通过 event.notification.data 来获取这个数据，如下：
+
+```js
+const notificationData = event.notification.data;
+console.log('The data notification had the following parameters:');
+Object.keys(notificationData).forEach(key => {
+    console.log(`  ${key}: ${notificationData[key]}`);
+});
+```
+
+
+#### 5.4.3.3 打开页面
+
+上面一部分提过，用户通过点击通知访问某个URL是非常常见的做法。那么如何做到打开页面访问某个URL呢？我们可以通过 clients.openWindow() 方法。 如下代码可以允许我们在捕获 notificationclick 事件的处理中打开新页面：
+
+```js
+let examplePage = '/demos/notification-examples/example-page.html';
+let promiseChain = clients.openWindow(examplePage);
+event.waitUntil(promiseChain);
+```
+
+通过 openWindow 方法，我们可以打开新窗口，并在新窗口中打开新页面。但如果这个页面已经被打开，更好的做法不是打开新窗口，而是直接激活那个TAB。
+
+
+#### 5.4.3.4 激活窗口
+
+如果需要打开的页面已经存在，我们应该激活它而不是再打开一次。在我们讨论如何激活之前，一个非常重要的点是：我们只能激活在自己域的页面。原因是我们只能知道属于自己域的页面哪些被打开，系统防止开发者掌握用户打开的所有页面，例如那些不属于开发者域的其他页面。
+
+先判断需要打开的页面是否已经打开了，如下：
+
+```js
+let urlToOpen = new URL(examplePage, self.location.origin).href;
+
+let promiseChain = clients.matchAll({
+    type: 'window',
+    includeUncontrolled: true
+})
+.then(windowClients => {
+    let matchingClient = null;
+
+    for (let i = 0, max = windowClients.length; i < max; i++) {
+        let windowClient = windowClients[i];
+        if (windowClient.url === urlToOpen) {
+            matchingClient = windowClient;
+            break;
+        }
+    }
+
+    return matchingClient
+        ? matchingClient.focus()
+        : clients.openWindow(urlToOpen);
+});
+
+event.waitUntil(promiseChain);
+```
+大约执行了这么几个步骤：
+
+1. 把目标页面从字符串转化为URL类型
+
+2. 获取已经打开的所有窗口
+
+3. 逐个寻找匹配
+
+4. 找到了则激活那个窗口；没有找到则打开新窗口
+
+5. 等待这一系列执行。
+
+第一步我们通过 new URL 来把字符串转化为URL对象，并且通过 href 属性获取地址。和原始的字符串相比，转化后的是一个绝对地址方便比较，而原始的是相对地址。
+
+第二步我们通过如下代码获取所有打开的窗口，注意这里的窗口只包含开发者自己域下的.
+
+```js
+const promiseChain = clients.matchAll({
+    type: 'window',
+    includeUncontrolled: true
+})
+```
+
+其中 type: 'window' 表示我们需要寻找打开的窗口和标签，不包括 web workers 。includeUncontrolled 表示不被  service worker 控制的但是属于自己域下的标签和窗口也都纳入搜索范围。一般情况下如果使用 matchAll 方法，includeUncontrolled 参数都是需要的。
+
+第三步通过 for 循环逐个匹配。当我们找到了结果则调用 focus() 方法进行激活；否则则使用上一节提到的 clients.openWindow() 使用新窗口打开。
+
+需要注意的是，matchingClient.focus() 和 clients.openWindow(urlToOpen) 返回的都是 Promise 对象，即链式调用。只有这样，才可以让最后一步的 event.waitUntil() 起到应有的作用。
+
+
+#### 5.4.3.5 合并通知
+
+
+假设每条通知的 data 都包含发送者的用户名（如X）。我们要做的第一步是获取用户那边的所有通知，从而找到是否有X发送信息的通知，代码如下：
+
+```js
+const userName = 'X';
+let promiseChain = registration.getNotifications()
+    .then(notifications => {
+        let currentNotification;
+
+        for(let i = 0, max = notifications.length; i < max; i++) {
+            if (notifications[i].data && notifications[i].data.userName === userName) {
+                currentNotification = notifications[i];
+                break;
+            }
+        }
+
+        return currentNotification;
+    });
+```
+
+
+registration.getNotifications() 是一个异步方法，因此我们需要使用 then 进行后续处理，筛选出X发来的信息，进行下一步操作。
+
+```js
+promiseChain.then(currentNotification => {
+    let notificationTitle;
+    let options = {
+        icon: userIcon
+    };
+
+    if (currentNotification) {
+        // 找到之前X发送信息的通知，整合通知。
+        let messageCount = currentNotification.data.newMessageCount + 1;
+
+        options.body = `You have ${messageCount} new messages from ${userName}.`;
+        options.data = {
+            userName: userName,
+            newMessageCount: messageCount
+        };
+        notificationTitle = `New Messages from ${userName}`;
+
+        // 把之前的信息删除
+        currentNotification.close();
+    }
+    else {
+        // 没找到，则常规处理
+        options.body = `"${userMessage}"`;
+        options.data = {
+            userName: userName,
+            newMessageCount: 1
+        };
+        notificationTitle = `New Message from ${userName}`;
+    }
+
+    return registration.showNotification(notificationTitle, options);
+});
+```
+
+#### 5.4.3.6 不要总是发送通知
+
+正常情况当有必要我们应当发送通知给用户告知变化和信息。但有一种情况我们不应该发送通知，那就是用户正在浏览我们的站点时。
+
+因此我们在发送通知时应当判断当前的状态并排除这种情况，代码如下：
+
+```js
+function isClientFocused() {
+    return clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true
+    })
+    .then(windowClients => {
+        let clientIsFocused = false;
+
+        for (let i = 0, max = windowClients.length; i < max; i++) {
+            if (windowClients[i].focused) {
+                clientIsFocused = true;
+                break;
+            }
+        }
+
+        return clientIsFocused;
+    });
+}
+```
+
+在“激活窗口”一节我们使用过 clients.matchAll 方法来遍历打开的（属于自己域的）窗口。这里也类似，通过查看 focused 属性来判断窗口是否处于激活状态。
+
+当我们监听到 push 事件之后，在发送通知之前，我们可以调用上述方法来判断究竟是否需要发送通知。
+
+```js
+const promiseChain = isClientFocused()
+    .then(clientIsFocused => {
+        // 窗口处于激活状态，不需要发送通知
+        if (clientIsFocused) {
+            console.log('Don\'t need to show a notification.');
+            return;
+        }
+
+        // 需要发送通知
+        return self.registration.showNotification('Had to show a notification.');
+    });
+
+event.waitUntil(promiseChain);
+```
+
+#### 5.4.3.7 向页面发送信息
+
+
+当自己站点的窗口处于激活状态时，我们应该避免向用户发送通知。但如果我们的确想向通知一些信息，但又不想使用这么“重”的通知呢？
+
+这种情况我们应该让 service worker 有办法通知页面，让页面进行一些提示或者变化（这样避免了震动或者通知栏提示，避免打扰用户），对用户来说会有更好的体验。
+
+假设我们接收到了一次 push ，首先我们需要检查我们的窗口是否处于激活状态（使用上述的 isClientFocused() 方法，但我们要把 windowClients 一并返回出来供使用），然后使用 postMessage 方法来向页面发送数据。
+
+
+```js
+// modify isClientFocused
+function isClientFocused() {
+    return clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true
+    })
+    .then(windowClients => {
+        let clientIsFocused = false;
+
+        for (let i = 0, max = windowClients.length; i < max; i++) {
+            if (windowClients[i].focused) {
+                clientIsFocused = true;
+                break;
+            }
+        }
+
+        // modify here
+        return {clientIsFocused, windowClients};
+    });
+}
+
+const promiseChain = isClientFocused()
+    .then({clientIsFocused, windowClients} => {
+        // 如果处于激活状态，向页面发送数据
+        if (clientIsFocused) {
+            windowClients.forEach(windowClient => {
+                windowClient.postMessage({
+                    message: 'Received a push message.',
+                    time: new Date().toString()
+                });
+            });
+        }
+        // 否则发送通知
+        else {
+            return self.registration.showNotification('No focused windows', {
+                body: 'Had to show a notification instead of messaging each page.'
+            });
+        }
+    });
+
+event.waitUntil(promiseChain);
+```
+
+
+而在每个页面中，我们可以通过监听 message 事件来获取这些数据。在主程序中代码如下：
+
+```js
+navigator.serviceWorker.addEventListener('message', event => {
+    console.log('Received a message from service worker: ', event.data);
+});
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
