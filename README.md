@@ -1676,8 +1676,469 @@ navigator.serviceWorker.addEventListener('message', event => {
 });
 ```
 
+## 6. 自动登陆
 
 
+### 6.1. 传统“记住密码”功能实现
+
+不少网站在登录界面会提供“记住密码”这样一个勾选项，方便用户省去输入账号密码，以实现网站的快速登录。
+
+传统的“记住密码”功能主要有两种实现方式：
+
+1. cookie存储登录信息
+
+    + 直接利用 cookie 存储用户的用户名和密码是非常不安全的，攻击者可以通过各种漏洞访问到 cookie 从而导致用户密码泄露。
+      
+    + 常用做法是，当用户登录成功时，服务端为用户生成一个 token，并且写入 cookie，然后用这个 token 作为用户的标识符，供用户直接使用 Token 进行登录。Token 需要制定一系列校验策略和失效规则来确保 Token 的可靠性，因此对开发者的技术要求较高。
+
+2. 浏览器自动填充登录信息
+
+浏览器会对网页的文本框和表单信息进行自动记录，特别地，当表单中存在输入类型为 password 的输入框时，会触发浏览器的记住账号密码提示
+
+- 触发浏览器记录登录信息的条件
+
+登录页面需要存在一个包含 type="text" 和 type="password" 的表单
+
+```html
+<form>
+    <p>用户名：<input type="text" name="username"></p>
+    <p>密码：<input type="password" name="password"></p>
+</form>
+```
+
+
+事实上，浏览器会获取 type="password" 的输入框，以及这个输入框之上最近的一个 type="text" 的输入框内容，分别作为登录信息中的密码和账号进行存储，比如下面的表单结构：
+
+```html
+<form>
+    <p>用户名1：<input type="text" name="username1"></p>
+    <p>用户名2：<input type="text" name="username2"></p>
+    <p>密码：<input type="password" name="password"></p>
+    <p><input type="submit" value="提交"></p>
+</form>
+```
+
+- 自动填充功能拓展
+
+在表单字段中添加 autocomplete 属性，能够让登录信息的自动填充过程变得更友好些。假设表单结构如下所示：
+
+```html
+<form>
+    <p>用户名：<input type="text" name="usr" autocomplete="username"></p>
+    <p>密码：<input type="password" name="pwd" autocomplete="current-password"></p>
+    <p><input type="submit" value="提交"></p>
+</form>
+```
+
+
+在触发自动填充时，会增加如下提示：
+
+autocomplete 属于 HTML5 中的新属性，该属性原先支持的值为 on | off，表示对应的输入框自动填充功能的打开或者关闭，默认值为 on。目前 autocomplete 的值新增了部分有助于自动填充功能的标记符，如上面表单提到的 username、current-password 等等。
+
+
+### 6.2. 凭证管理 API
+   
+   
+凭据管理 API（Crediential Management API），可以把用户的登录信息直接存储于客户端中，这些信息不会写到 cookie 中，因此安全性很高。同时因为账号密码直接写入本地，安全性和可靠性由浏览器保证，因此就不需要额外设计 token 之类的机制进行校验，从而大大降低开发难度。
+  
+  
+#### 6.2.1 登录流程的异步改造
+
+登录信息只有在验证用户登录成功之后才能进行存储，这样的登录信息才会有意义。为了能够获知用户登录成功，同时在登录成功之后调用凭证管理 API 进行用户登录信息存储，登录流程需要进行异步改造。
+
+登录流程需要完成以下三步：
+
+1. 实现异步登录；
+2. 登录成功后调用凭证管理 API 进行登录信息存储；
+3. 完成登录成功后页面切换或者是 UI 更新之类的操作。  
+  
+
+#### 6.2.2 凭据存储
+
+需要调用 navigator.credentials.store() 这个方法进行登录信息存储。由于仅有部分浏览器支持凭据管理 API，因此在使用前需要进行方法是否存在的判断:
+
+```js
+if (navigator.credentials) {
+    // 使用 navigator.credentials.store 进行凭证存储
+}
+```
+
+navigator.credentials.store 的方法定义如下：
+
+{Promise} navigator.credentials.store({Credetial} cred)
+
+存储凭证的方法
+
+返回 {Promise} : promise 对象，存储操作完成时，会返回所存储的 cred 的值。
+
+navigator.credentials.store 之所以是个异步操作，是因为在调用该方法时，浏览器会弹出提示框询问用户是否对登录信息进行存储，如图所示：
+
+[!save](/images/save-dialog.jpg)
+
+只有当用户选择“保存”时，浏览器才会将登录信息存储起来，点击取消则 promise 将变成 reject。
+
+参数
+
+{Credetial} cred: 凭证对象
+凭证管理 API 提供了两凭据对象：PasswordCredential 和 FederatedCredential，这两种凭据对象均实现了 Credential 的接口，可以分别针对 账号密码登录 和 第三方登录 两种模式的登录信息进行存储。
+
+如：
+
+```js
+// 账号密码登录凭证登录
+if (navigator.credentials) {
+    var cred = new PasswordCredential({
+        id: 'TEST_ID_NUMBER',
+        password: 'TEST_PASSWORD',
+        name: 'TEST_NICK_NAME',
+        iconURL: 'path/to/icon'
+    });
+    navigator.credentials.store(cred).then(cred => {
+        // 后续操作
+    });
+}
+
+/* ------------------------------------ */
+
+// 第三方登录凭证存储
+if (navigator.credentials) {
+    var cred = new FederatedCredential({
+        id: 'TEST_ID_NUMBER',
+        provider: 'http://MOCK_PROVIDER',
+        name: 'TEST_NICK_NAME',
+        iconUrl: 'path/to/icon'
+    });
+    navigator.credentials.store(cred).then(cred => {
+        // 后续操作
+    });
+}
+```
+
+
+#### 6.2.2 凭据获取
+
+通过 navigator.credentials.get() 方法，可以获取同个域名下用户存储的登录信息。
+
+举例代码如下：
+
+```js
+if (navigator.credentials) {
+    navigator.credentials.get({
+        password: true
+    });
+}
+```
+
+如果该域名事先有调用凭证管理 API 进行登录信息存储，在执行上述代码时，将会弹出账号选择器供用户进行账户选择：
+
+[!a](/images/multi-select.jpg)
+
+
+如果存储的登录信息只有一个，那么还将会隐去账号选择器而直接将唯一的登录信息返回，并且在界面上产生如下提示信息:目前登陆的账号是xxxxx
+
+navigator.credentials.get 方法的定义如下：
+
+{Promise} navigator.credentials.get({Object} options)
+
+获取凭证的方法
+
+返回
+
+{Promise} : promise 对象，当获取凭证操作完成时，会返回所存储的凭证，如果找不到对应的凭证时，则返回 null。
+参数
+
+options 包含以下字段：
+
+- password: {boolean} 是否支持通过密码认证登录
+- federated: 第三方登录 {Object}
+ + providers: {Array} 联合登录账号供应者 id 组成的数组
+- unmediated: {boolean} 是否显示账号选择器
+
+
+1. 获取账号密码登录凭证
+
+只有当 options.password === true 时，账号选择器才会展示类型为 PasswordCredential 的登录信息。
+
+2. 获取第三方登录凭证配置信息
+
+只有当 federated.providers 配置了相应的第三方登录账号提供者 id 列表，账号选择器才会展示类型为 FederatedCredential，同时账号提供者在 providers 列表中的登录信息。
+
+3. 获取登录信息过滤
+
+可以通过配置不同的 options 去实现账号信息的过滤，减少用户的选择。比如配置如下的时候：
+
+```js
+navigator.credentials.get({
+    password: true,
+    federated: {
+        providers: ['https://www.baidu.com']
+    }
+})
+```
+所有的账号密码凭证和第三方登录凭证信息都会罗列出来：
+
+[!third](/images/third-party-select.jpg)
+
+其中带提供方标识的属于第三方登录凭证信息。
+
+如果只选择获取账号密码凭证：账号选择器将只显示帐号密码凭证信息.
+
+```js
+navigator.credentials.get({password: true})
+```
+
+
+只选择获取第三方登录凭证：账号选择器将只显示第三方凭证信息.
+
+```js
+navigator.credentials.get({
+    federated: {
+        providers: ['https://www.baidu.com']
+    }
+})
+```
+
+事实上，如果站点支持多种第三方登录的话，还可以通过配置不同的 providers 数组来进一步缩小第三方登录信息的选择范围。
+
+4. 自动登录
+
+有时对于用户来说，在同一个网站仅仅保存了一个账号的情况下，在登录时仍然弹出账号选择器让用户选择的这个过程会显得有些多余。因此可以将 options.unmediated 设置为 true，在调用 navigator.credentials.get(options) 时，能够直接返回一个登录信息，省去账号选择器的显示与选择，帮助用户实现自动登录。自动登录需要满足以下条件：
+
+- 浏览器已经显式地告知用户正在进行自动登录
+- 用户曾经通过凭证管理 API 登录了网站
+- 用户在该网站只保存了一个认证对象
+- 用户在上一次访问时没有主动退出登录
+
+> 当任一条件不满足时，这个方法将会被 reject 或者是返回的凭证为 undefined，在这种情况下账号选择器也不会显示出来，这时用户就只能手动输入账号密码了...
+
+因此不太建议将 unmediated 设为 true，而是不对其进行任何赋值操作，让浏览器自动去判断是应该显示账号选择器还是直接实现自动登录。
+
+在满足条件的情况下，调用 navigator.credentials.get(options) 方法时将不会显示账号选择器，而是直接将唯一的账号信息返回，同时显式地弹出如下提示:
+
+[!auto-login](/images/auto-login.jpg)
+
+
+#### 6.2.3 退出登陆
+
+当用户退出网站时，应该确保用户在下次访问的时候不会自动登录。可以通过调用 navigator.credentials.requireUserMediation() 或 navigator.credentials.preventSilentAccess() 来关闭自动登录。Chrome 60+ 后，requireUserMediation 被重命名为 preventSilentAccess，请注意兼容。
+
+```js
+app.logout = function () {
+    // 处理登出流程
+    if (navigator.credentials.requireUserMediation) {
+        navigator.credentials.requireUserMediation();
+    }
+    else if (navigator.credentials.preventSilentAccess) {
+        navigator.credentials.preventSilentAccess();
+    }
+};
+```
+
+
+这样调用 app.logout() 登出后，如果调用 navigator.credentials.get() 时，将不会触发自动登录。
+
+
+### 6.3. 账号密码凭证管理
+
+网站通常会自己实现一套登录系统，需要账号和密码作为登录信息。使用凭证管理 API 进行账号密码凭证管理，即可方便快捷地实现自动登录，提升用户体验。
+
+凭证管理 API 提供了 PasswordCredential 凭据对象，需要将账号密码信息转换为凭证之后再进行存取操作。
+
+PasswordCredential 实现了 Credetial 的接口。PasswordCredential 初始化传入的对象需要包含以下信息：
+
+- id: 必须 账号
+- password: 必须 密码
+- name: 非必需 用户名
+- iconURL: 非必需 用户头像，注意 URL 三个字母均为大写
+
+如：
+
+```js
+let cred = new PasswordCredential({
+    id: profile.id,
+    password: profile.password,
+    name: profile.name,
+    iconURL: profile.iconUrl
+});
+```
+
+其中 name 和 iconURL 是用于账号选择器的显示，因为相比于不易阅读的账号，使用用户名和头像进行账号区分，会显得更加友好。可以在用户登录成功时，从服务端返回相应的信息供存储。
+
+#### 6.3.1 存储登录信息
+
+调用 navigator.credentials.store() 这个方法进行登录信息存储，如：
+
+```js
+if (navigator.credentials) {
+    var cred = new PasswordCredential({
+        id: formData.get('usr'),
+        password: formData.get('pwd'),
+        // name: nickName,
+        // iconURL: iconUrl
+    });
+    var promise = navigator.credentials.store(cred);
+    // 后续操作
+}
+```
+
+此时会弹出对话框询问用户是否对登录信息进行存储,只有当用户选择“保存”时，浏览器才会将登录信息存储起来，点击取消则 promise 将变成 reject。
+
+
+#### 6.3.2 获取用户登录信息
+
+在调用 navigator.credentials.get() 方法时，需要传入参数 password: true 才能够返回类型为 PasswordCredential 的登录信息。
+
+举例代码如下：
+
+```js
+if (navigator.credentials) {
+    navigator.credentials.get({
+        password: true
+    });
+}
+```
+
+在获取到登录信息之后，可以通过判断 cred.type === 'password' 来进一步确认获取到的登录信息属于 PasswordCredential 类型：
+
+
+```js
+// 在这样的配置下，账号选择器可能会返回
+// `PasswordCredential` 或 `FederatedCredential` 的凭证
+navigator.credentials.get({
+    password: true,
+    federated: {
+        providers: ['https://www.baidu.com']
+    }
+})
+.then(cred => {
+    // cred 可能为 undefined
+    if (cred) {
+        switch (cred.type) {
+            case 'password':
+                // 对 PasswordCredential 凭证进行处理
+            // ...
+        }
+    }
+});
+```
+
+点击登录按钮之后，采用 AJAX 方式提交登录信息。AJAX 请求返回如下：
+
+```js
+{
+    "name": "测试名",
+    "icon": "https://lavas-project.github.io/pwa-demo/credential-demo/images/logo-48x48.png"
+}
+```
+
+
+然后，调用凭证管理 API 进行登录信息存储后跳转至登录成功页，代码如下：
+
+```js
+// fetch('./login.json') 为假装登录并获取登录信息
+fetch('./login.json')
+.then(res => {
+    if (res.status === 200) {
+        return res.json();
+    }
+
+    return Promise.reject(res.status);
+})
+// 此处假装登录成功
+.then(data => {
+    // 此处调用凭证管理 API 进行登录信息存储
+    if (navigator.credentials) {
+        // 生成密码凭据
+        let cred = new PasswordCredential({
+            id: usr.value,
+            password: pwd.value,
+            name: data.name,
+            iconURL: data.icon
+        });
+        // 登录信息存储
+        return navigator.credentials.store(cred)
+            .then(() => {
+                return data;
+            });
+    }
+
+    return Promise.resolve(data);
+})
+// 存储完成后再跳转至登录成功页
+.then(data => {
+    window.location.href = './main.html?from=login&username=' + data.name;
+});
+```
+
+
+在存储至少一个登录信息的情况下重新打开登录页，将自动弹出账户选择器, 如果有多个账户的时候，则列表显示多个账户.
+
+点击对应的账户，会自动将账户信息填充至登录表单。这个填充过程实际上是开发者自己控制的，我们也可以拿到账户信息之后，直接去自动登录。对应账户信息获取及填充表单的代码如下：
+
+
+```js
+// 获取登录凭证
+if (navigator.credentials) {
+    navigator.credentials.get({
+        password: true
+    })
+    .then(cred => {
+        if (cred) {
+
+            switch (cred.type) {
+                case 'password':
+                    // 此处为自动填充表单的代码
+                    // 开发者可以根据实际需要对账户信息进行其他处理
+                    usr.value = cred.id;
+                    pwd.value = cred.password;
+                    break;
+                default:
+                    break;
+            }
+        }
+    });
+}
+```
+
+
+在只有一个登录信息的情况下再次打开登录页，将出现自动登录提示信息.
+
+在登录成功页点击退出登录按钮，则自动注销当前凭证，在下次打开登录页时，将会重新弹出账号选择器，而不会自动登录了。注销凭证的代码如下：
+
+```js
+// 点击按钮触发注销凭证事件
+$btn.addEventListener('click', () => {
+    // 注销凭证
+    navigator.credentials.requireUserMediation()
+        .then(afterLogout)
+        .catch(afterLogout);
+});
+```
+
+
+### 6.4. 第三方登录凭证管理
+
+对于用户而言，注册账号密码是一件非常麻烦的事情，不但注册过程繁琐且花时间，同时也提高了用户的账号维护成本。因此如果网站能够提供第三方登录，让用户能够直接复用一些现有且常用的网站账号，将能够大大提高用户体验。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
 
 
 
