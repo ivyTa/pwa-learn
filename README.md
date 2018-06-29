@@ -67,7 +67,7 @@ W3C 组织早在 2014 年 5 月就提出过 Service Worker 这样的一个 HTML5
 ```js
 if ('serviceWorker' in navigator) {
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('./sw.js')
+      navigator.serviceWorker.register('./sw.js', {scope: '/'})
         .then(function (registration) {
 
           // 注册成功
@@ -81,6 +81,40 @@ if ('serviceWorker' in navigator) {
     });
   }
 ```
+
+1. 首先是要判断 Service Worker API 的可用情况；
+
+2. 如果支持的话，在页面 onload 的时候注册位于 /sw.js 的 Service Worker。
+
+3. 每次页面加载成功后，就会调用 register() 方法，浏览器将会判断 Service Worker 线程是否已注册并做出相应的处理。
+
+4. register 方法的 scope 参数是可选的，用于指定你想让 Service Worker 控制的内容的子目录。本 demo 中服务工作线程文件位于根网域， 这意味着服务工作线程的作用域将是整个来源。关于 register 方法的 scope 参数，需要说明一下：Service Worker 线程将接收 scope 指定网域目录上所有事项的 fetch 事件，如果我们的 Service Worker 的 javaScript 文件在 /a/b/sw.js， 不传 scope 值的情况下, scope 的值就是  /a/b。scope 的值的意义在于，如果 scope 的值为 /a/b， 那么 Service Worker 线程只能捕获到 path 为 /a/b 开头的( /a/b/page1, /a/b/page2，...)页面的 fetch 事件。通过 scope 的意义我们也能看出 Service Worker 不是服务单个页面的，所以在 Service Worker 的 js 逻辑中全局变量需要慎用。
+   
+5. then() 函数链式调用我们的 promise，当 promise resolve 的时候，里面的代码就会执行。
+
+6. catch() 函数，当 promise rejected 才会执行。
+    
+代码执行完成之后，我们这就注册了一个 Service Worker，它工作在 worker context，所以没有访问 DOM 的权限。在正常的页面之外运行 Service Worker 的代码来控制它们的加载。
+
+
+#### 2.4.1 查看是否注册成功
+
+可以在 PC 上打开 chrome 浏览器, 输入 chrome://inspect/#service-workers
+
+还可以通过 chrome://serviceworker-internals 来查看服务工作线程详情。 如果只是想了解服务工作线程的生命周期，这仍很有用，但是日后其很有可能被 chrome://inspect/#service-workers 完全取代。
+
+当然，它还可用于测试隐身窗口中的 Service Worker 线程，您可以关闭 Service Worker 线程并重新打开，因为之前的 Service Worker 线程不会影响新窗口。从隐身窗口创建的任何注册和缓存在该窗口关闭后均将被清除。
+
+
+
+#### 2.4.2 注册失败的原因
+
+- 不是 HTTPS 环境，不是 localhost 或 127.0.0.1。
+
+- Service Worker 文件的地址没有写对，需要相对于 origin。
+
+- Service Worker 文件在不同的 origin 下而不是你的 App 的，这是不被允许的。
+
 
 
 ### 2.5  Service Workers 缓存
